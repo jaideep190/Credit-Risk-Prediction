@@ -8,23 +8,48 @@ Tabs:
        SHAP feature contribution chart explaining the prediction.
     2. Drift Monitoring - placeholder until src/drift_monitor.py exists.
 
+Model source (API vs local fallback):
+    This dashboard tries the FastAPI backend first (POST /explain). If that
+    call fails for any reason (backend not running, unreachable, timed out -
+    e.g. because you deployed only this Streamlit app to a free-tier host
+    that can't also run a second FastAPI process), it transparently falls
+    back to running the same model in-process using common/inference.py.
+    Same model file, same preprocessing, same SHAP explainer either way -
+    see common/inference.py's module docstring for why that's guaranteed.
+    A small badge under the input form always shows which path served the
+    last prediction.
+
 Run:
     streamlit run dashboard/app.py
 
-Requires the FastAPI app running separately (default: http://localhost:8000).
+The FastAPI app (app/main.py) is optional. Run it separately for the "live
+API" path (default: http://localhost:8000); if you don't run it, or it's
+unreachable, the dashboard just uses the local fallback automatically.
 """
 
 import json
 import os
+import sys
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+# Allow "from common.inference import ..." when this script is launched as
+# `streamlit run dashboard/app.py` from the project root (Python only adds
+# this script's own directory to sys.path, not the project root, so we add
+# the parent directory ourselves).
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from common.inference import explain_one, load_artifacts  # noqa: E402
+
 st.set_page_config(page_title="Credit Risk Prediction", layout="wide", page_icon=None)
 
 DEFAULT_API_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_TIMEOUT_SECONDS = 3  # keep short so the fallback kicks in quickly, not after a long hang
 LOG_PATH = "logs/requests.jsonl"
 TEST_DATA_PATH = "data/processed/test.csv"
 
@@ -90,6 +115,14 @@ def load_test_data():
     return pd.read_csv(TEST_DATA_PATH)
 
 
+@st.cache_resource(show_spinner="Loading model for local fallback...")
+def get_local_bundle():
+    """Loaded once per Streamlit session (cached) and reused for every
+    fallback prediction, so the fallback path is fast after the first hit."""
+    models_dir = os.path.join(PROJECT_ROOT, "models")
+    return load_artifacts(models_dir=models_dir)
+
+
 def get_api_url() -> str:
     return st.session_state.get("api_url", DEFAULT_API_URL)
 
@@ -115,9 +148,30 @@ def load_example_into_state(row: pd.Series):
 
 
 def call_api(endpoint: str, payload: dict, api_url: str) -> dict:
-    response = requests.post(f"{api_url}/{endpoint}", json=payload, timeout=10)
+    response = requests.post(f"{api_url}/{endpoint}", json=payload, timeout=API_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
+
+
+def get_explanation(payload: dict, api_url: str) -> tuple[dict, str, str | None]:
+    """Try the live FastAPI /explain endpoint first; if it's unreachable,
+    times out, or errors, fall back to running the model in-process via
+    common/inference.py. Returns (result, source, api_error) where source
+    is "api" or "local" and api_error is the reason the API path was
+    skipped (None if the API call succeeded)."""
+    try:
+        result = call_api("explain", payload, api_url)
+        return result, "api", None
+    except requests.exceptions.RequestException as e:
+        try:
+            bundle = get_local_bundle()
+        except Exception as load_err:
+            raise RuntimeError(
+                f"API unreachable ({e}) and local fallback model failed to load "
+                f"({load_err}). Make sure the models/ directory is present."
+            ) from load_err
+        result = explain_one(payload, bundle)
+        return result, "local", str(e)
 
 
 def render_risk_gauge(probability: float, threshold: float) -> go.Figure:
@@ -180,6 +234,10 @@ def predict_tab():
 
     with st.sidebar:
         st.text_input("API URL", value=DEFAULT_API_URL, key="api_url")
+        st.caption(
+            "If this API isn't reachable, predictions automatically fall back "
+            "to running the model locally inside this Streamlit app."
+        )
 
     st.subheader("Applicant Risk Assessment")
 
@@ -222,10 +280,19 @@ def predict_tab():
         payload = {col: st.session_state[FIELD_KEYS[col]] for col in RAW_FEATURE_COLUMNS}
 
         try:
-            result = call_api("explain", payload, get_api_url())
-        except requests.exceptions.RequestException as e:
-            st.error(f"Could not reach the API at {get_api_url()}. Is it running? ({e})")
+            result, source, api_error = get_explanation(payload, get_api_url())
+        except RuntimeError as e:
+            st.error(str(e))
             return
+
+        if source == "api":
+            st.success(f"Served by live API at {get_api_url()}")
+        else:
+            st.info(
+                f"API unreachable ({api_error}) - served by the model running "
+                "locally inside this app instead."
+                
+            )
 
         probability = result["default_probability"]
         threshold = result["decision_threshold"]
