@@ -1,0 +1,27 @@
+# --- FastAPI model-serving image ---
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps needed by lightgbm/xgboost at runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Only what the API actually needs at runtime
+COPY app/ ./app/
+COPY common/ ./common/
+COPY models/ ./models/
+
+# Created at runtime by log_request(); mount a volume here if you want logs to persist
+RUN mkdir -p logs
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

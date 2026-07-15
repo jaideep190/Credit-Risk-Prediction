@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs   # persist request logs on the host
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      # "api" is the service name above - Docker's internal DNS resolves it
+      # to the api container's IP on the shared compose network.
+      - API_URL=http://api:8000
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - api
+    restart: unless-stopped

@@ -126,7 +126,7 @@ Streamlit dashboard
 
 ## Tech Stack
 
-Python, Pandas, Scikit-learn, XGBoost, LightGBM, SHAP, FastAPI, Streamlit, Plotly
+Python, Pandas, Scikit-learn, XGBoost, LightGBM, SHAP, FastAPI, Streamlit, Plotly, Docker
 
 ## Running Locally
 
@@ -146,5 +146,22 @@ streamlit run dashboard/app.py         # http://localhost:8501
 # Drift monitoring demo
 python src/simulate_traffic.py --api-url http://localhost:8000
 python src/drift_monitor.py
+```
+
+## Running with Docker
+
+```bash
+docker compose up --build
+```
+
+- API → `http://localhost:8000/docs`
+- Dashboard → `http://localhost:8501`
+
+Each service has its own Dockerfile (`Dockerfile.api`, `Dockerfile.dashboard`) so images stay minimal — the API image doesn't bundle Streamlit, and vice versa. `docker-compose.yml` wires them together and sets `API_URL=http://api:8000` on the dashboard container so it resolves the API by service name.
+
+Run the dashboard alone (mirrors the free-tier deployment, no API container):
+```bash
+docker build -f Dockerfile.dashboard -t credit-risk-dashboard .
+docker run -p 8501:8501 credit-risk-dashboard
 ```
 

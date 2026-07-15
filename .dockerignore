@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.git/
+.gitignore
+logs/*
+!logs/.gitkeep
+data/raw/
+notebooks/
+images/
+*.md
+.env
+.DS_Store
