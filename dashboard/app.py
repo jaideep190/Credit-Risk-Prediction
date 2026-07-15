@@ -250,22 +250,93 @@ def predict_tab():
             )
 
 
+def render_psi_heatmap(feature_level: list, windows: list) -> go.Figure:
+    df = pd.DataFrame(feature_level)
+    pivot = df.pivot(index="feature", columns="window", values="psi").reindex(columns=windows)
+    pivot.index = [FEATURE_DISPLAY_NAMES.get(f, f) for f in pivot.index]
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=pivot.values,
+            x=pivot.columns,
+            y=pivot.index,
+            colorscale="RdYlGn_r",
+            zmin=0,
+            zmax=max(0.5, pivot.values.max()),
+            text=pivot.values.round(3),
+            texttemplate="%{text}",
+            colorbar={"title": "PSI"},
+        )
+    )
+    fig.update_layout(
+        title="Drift Heatmap - PSI per Feature per Window",
+        height=450,
+        margin=dict(t=50, b=40, l=10, r=10),
+    )
+    return fig
+
+
+def render_psi_trend(window_summary: list) -> go.Figure:
+    df = pd.DataFrame(window_summary)
+    colors = [
+        "#55A868" if sev == "stable" else "#DD8452" if sev == "moderate_drift" else "#C44E52"
+        for sev in df["overall_severity"]
+    ]
+
+    fig = go.Figure(
+        go.Bar(x=df["window"], y=df["mean"], marker_color=colors, text=df["overall_severity"], textposition="outside")
+    )
+    fig.add_hline(y=0.10, line_dash="dash", line_color="gray", annotation_text="Moderate drift (0.10)")
+    fig.add_hline(y=0.25, line_dash="dash", line_color="black", annotation_text="Significant drift (0.25)")
+    fig.update_layout(
+        title="Mean PSI Across Features, Per Simulated Time Window",
+        yaxis_title="Mean PSI",
+        height=420,
+        margin=dict(t=50, b=40, l=10, r=10),
+    )
+    return fig
+
+
 def drift_tab():
     st.subheader("Drift Monitoring")
-    st.info(
-        "This tab will show Population Stability Index (PSI) drift metrics comparing "
-        "incoming request data against the training distribution, tracked over simulated "
-        "time windows. Not yet implemented - see src/drift_monitor.py (coming next)."
+    st.caption(
+        "Traffic shown here is simulated (src/simulate_traffic.py) to validate the drift "
+        "detection mechanism, not real production usage - see README for details."
     )
 
-    if os.path.exists(LOG_PATH):
-        with open(LOG_PATH) as f:
-            request_count = sum(1 for _ in f)
-        st.metric("Logged prediction requests so far", request_count)
-        st.caption(f"Reading from {LOG_PATH}")
-    else:
-        st.metric("Logged prediction requests so far", 0)
-        st.caption("No requests logged yet - use the Predict tab or call the API to generate some.")
+    report_path = os.path.join("models", "drift_report.json")
+    if not os.path.exists(report_path):
+        st.warning(
+            "No drift report found yet. Run src/simulate_traffic.py then src/drift_monitor.py "
+            "from the project root to generate one."
+        )
+        return
+
+    with open(report_path) as f:
+        report = json.load(f)
+
+    windows = report["windows"]
+    window_summary = report["window_summary"]
+
+    flagged = [w for w in window_summary if w["overall_severity"] == "significant_drift"]
+    stable = [w for w in window_summary if w["overall_severity"] == "stable"]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Windows analyzed", len(windows))
+    col2.metric("Flagged as significant drift", len(flagged))
+    col3.metric("Stable windows", len(stable))
+
+    st.plotly_chart(render_psi_trend(window_summary), use_container_width=True)
+    st.plotly_chart(render_psi_heatmap(report["feature_level"], windows), use_container_width=True)
+
+    st.caption(
+        f"PSI thresholds: stable below {report['thresholds']['stable_below']}, "
+        f"significant drift at or above {report['thresholds']['significant_at_or_above']} "
+        "(standard industry convention for population stability monitoring)."
+    )
+
+    with st.expander("Raw feature-level PSI table"):
+        st.dataframe(pd.DataFrame(report["feature_level"]), use_container_width=True)
 
 
 def main():
